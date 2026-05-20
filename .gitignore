@@ -15,6 +15,7 @@ pom.xml.next
 dependency-reduced-pom.xml
 tmp/
 release.properties
+*.log
 
 /native-image-config*/
 /providers/

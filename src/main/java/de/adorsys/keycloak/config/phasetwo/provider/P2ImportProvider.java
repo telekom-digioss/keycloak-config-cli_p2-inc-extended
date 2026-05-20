@@ -2,7 +2,7 @@
  * ---license-start
  * keycloak-config-cli
  * ---
- * Copyright (C) 2017 - 2021 adorsys GmbH & Co. KG @ https://adorsys.com
+ * Copyright (C) 2026 Deutsche Telekom IT GmbH & https://www.telekom.de
  * ---
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,18 +18,15 @@
  * ---license-end
  */
 
-package de.adorsys.keycloak.config.provider;
+package de.adorsys.keycloak.config.phasetwo.provider;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import de.adorsys.keycloak.config.exception.InvalidImportException;
 import de.adorsys.keycloak.config.model.ImportResource;
-import de.adorsys.keycloak.config.model.KeycloakImport;
-import de.adorsys.keycloak.config.model.RealmImport;
 import de.adorsys.keycloak.config.properties.ImportConfigProperties;
 import de.adorsys.keycloak.config.service.script.JavaScriptEvaluator;
 import de.adorsys.keycloak.config.service.script.ScriptEvaluator;
-import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.text.StringSubstitutor;
@@ -37,8 +34,6 @@ import org.apache.commons.text.lookup.StringLookup;
 import org.apache.commons.text.lookup.StringLookupFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.env.Environment;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
@@ -54,35 +49,37 @@ import java.io.InputStream;
 import java.net.Authenticator;
 import java.net.PasswordAuthentication;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Component
-@ConditionalOnProperty(prefix = "run", name = "operation", havingValue = "IMPORT", matchIfMissing = true)
-public class KeycloakImportProvider {
-    private final PathMatchingResourcePatternResolver patternResolver;
-    private final ImportConfigProperties importConfigProperties;
-    private final Environment environment;
+public class P2ImportProvider {
 
-    private StringSubstitutor interpolator = null;
-    private ScriptEvaluator scriptEvaluator = null;
-
+    private static final Path CWD = Paths.get(System.getProperty("user.dir"));
+    private static final Logger logger = LoggerFactory.getLogger(P2ImportProvider.class);
     private static final Pattern JS_PATTERN = Pattern.compile("\\$\\$\\{javascript:(.*?)\\}", Pattern.DOTALL);
-
-    private static final Logger logger = LoggerFactory.getLogger(KeycloakImportProvider.class);
-
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
-    @Autowired
-    public KeycloakImportProvider(
+    private final PathMatchingResourcePatternResolver patternResolver;
+    private final ImportConfigProperties importConfigProperties;
+    private StringSubstitutor interpolator = null;
+    private ScriptEvaluator scriptEvaluator = null;
+
+    public P2ImportProvider(
             Environment environment,
             PathMatchingResourcePatternResolver patternResolver,
             ImportConfigProperties importConfigProperties
     ) {
-        this.environment = environment;
         this.patternResolver = patternResolver;
         this.importConfigProperties = importConfigProperties;
 
@@ -95,28 +92,11 @@ public class KeycloakImportProvider {
         }
     }
 
-    private void setupVariableSubstitution(Environment environment) {
-        StringLookup variableResolver = StringLookupFactory.INSTANCE.interpolatorStringLookup(
-                StringLookupFactory.INSTANCE.functionStringLookup(environment::getProperty)
-        );
-
-        this.interpolator = StringSubstitutor.createInterpolator()
-                .setVariableResolver(variableResolver)
-                .setVariablePrefix(importConfigProperties.getVarSubstitution().getPrefix())
-                .setVariableSuffix(importConfigProperties.getVarSubstitution().getSuffix())
-                .setEnableSubstitutionInVariables(importConfigProperties.getVarSubstitution().isNested())
-                .setEnableUndefinedVariableException(importConfigProperties.getVarSubstitution().isUndefinedIsError());
-    }
-
-    public KeycloakImport readFromLocations(String... locations) {
-        return readFromLocations(Arrays.asList(locations));
-    }
-
-    public KeycloakImport readFromLocations(Collection<String> locations) {
-        Map<String, Map<String, List<RealmImport>>> realmImports = new LinkedHashMap<>();
+    public Map<String, Map<String, List<Map<String, Object>>>> readFromLocations(Collection<String> locations) {
+        Map<String, Map<String, List<Map<String, Object>>>> rawImports = new LinkedHashMap<>();
 
         for (String location : locations) {
-            logger.debug("Loading file location '{}'", location);
+            logger.debug("Loading P2 file location '{}'", location);
             String resourceLocation = prepareResourceLocation(location);
 
             Resource[] resources;
@@ -132,20 +112,32 @@ public class KeycloakImportProvider {
                 throw new InvalidImportException("No files matching '" + location + "'!");
             }
 
-            // Import Pipe
-            Map<String, List<RealmImport>> realmImport = Arrays.stream(resources)
+            Map<String, List<Map<String, Object>>> rawImport = Arrays.stream(resources)
                     .map(this::readResource)
                     .filter(this::filterEmptyResources)
                     .sorted(Map.Entry.comparingByKey())
                     .map(this::substituteImportResource)
-                    .map(this::readRealmImportFromImportResource)
+                    .map(this::readRawImportFromImportResource)
                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
                             (oldValue, newValue) -> oldValue, LinkedHashMap::new));
 
-            realmImports.put(location, realmImport);
+            rawImports.put(location, rawImport);
         }
 
-        return new KeycloakImport(realmImports);
+        return rawImports;
+    }
+
+    private void setupVariableSubstitution(Environment environment) {
+        StringLookup variableResolver = StringLookupFactory.INSTANCE.interpolatorStringLookup(
+                StringLookupFactory.INSTANCE.functionStringLookup(environment::getProperty)
+        );
+
+        this.interpolator = StringSubstitutor.createInterpolator()
+                .setVariableResolver(variableResolver)
+                .setVariablePrefix(importConfigProperties.getVarSubstitution().getPrefix())
+                .setVariableSuffix(importConfigProperties.getVarSubstitution().getSuffix())
+                .setEnableSubstitutionInVariables(importConfigProperties.getVarSubstitution().isNested())
+                .setEnableUndefinedVariableException(importConfigProperties.getVarSubstitution().isUndefinedIsError());
     }
 
     private boolean filterExcludedResources(Resource resource) {
@@ -154,7 +146,6 @@ public class KeycloakImportProvider {
         }
 
         File file;
-
         try {
             file = resource.getFile();
         } catch (IOException ignored) {
@@ -165,7 +156,8 @@ public class KeycloakImportProvider {
             return false;
         }
 
-        if (!this.importConfigProperties.getFiles().isIncludeHiddenFiles() && (file.isHidden() || FileUtils.hasHiddenAncestorDirectory(file))) {
+        if (!this.importConfigProperties.getFiles().isIncludeHiddenFiles()
+                && (file.isHidden() || hasHiddenAncestorDirectory(file))) {
             return false;
         }
 
@@ -175,14 +167,7 @@ public class KeycloakImportProvider {
                 .map(pattern -> pattern.startsWith("**") ? "/" + pattern : pattern)
                 .map(pattern -> !pattern.startsWith("/**") ? "/**" + pattern : pattern)
                 .map(pattern -> !pattern.startsWith("/") ? "/" + pattern : pattern)
-                .noneMatch(pattern -> {
-                    boolean match = pathMatcher.match(pattern, file.getPath());
-                    if (match) {
-                        logger.debug("Excluding resource file '{}' (match {})", file.getPath(), pattern);
-                        return true;
-                    }
-                    return false;
-                });
+                .noneMatch(pattern -> pathMatcher.match(pattern, file.getPath()));
     }
 
     private ImportResource readResource(Resource resource) {
@@ -198,6 +183,34 @@ public class KeycloakImportProvider {
         } finally {
             Authenticator.setDefault(null);
         }
+    }
+
+    private boolean hasHiddenAncestorDirectory(File file) {
+        File absoluteFile;
+
+        try {
+            absoluteFile = file.getAbsoluteFile().toPath().toAbsolutePath().normalize().toFile();
+        } catch (NullPointerException ignored) {
+            return false;
+        }
+
+        File relativeFile = relativize(absoluteFile);
+        while (relativeFile != null) {
+            if (relativeFile.isHidden()) {
+                return true;
+            }
+            relativeFile = relativeFile.getParentFile();
+        }
+
+        return false;
+    }
+
+    private File relativize(File file) {
+        Path absolutePath = file.toPath();
+        if (absolutePath.startsWith(CWD)) {
+            return CWD.relativize(absolutePath).toFile();
+        }
+        return absolutePath.toFile();
     }
 
     private boolean filterEmptyResources(ImportResource resource) {
@@ -220,115 +233,73 @@ public class KeycloakImportProvider {
     }
 
     private String evaluateScripts(String content) {
-        Map<String, Object> context = new HashMap<>();
-        Map<String, String> env = new HashMap<>();
+        Map<String, Object> context = new LinkedHashMap<>();
+        Map<String, String> env = new LinkedHashMap<>();
         System.getenv().forEach(env::put);
-
-        // Add system properties to env context for testing/flexibility
-        System.getProperties().forEach((k, v) -> env.put(k.toString(), v.toString()));
-
+        System.getProperties().forEach((key, value) -> env.put(key.toString(), value.toString()));
         context.put("env", env);
 
         Matcher matcher = JS_PATTERN.matcher(content);
         StringBuilder sb = new StringBuilder();
-
         while (matcher.find()) {
             String expression = matcher.group(1);
             Object result = scriptEvaluator.evaluate(expression, context);
             String replacement;
             try {
-                if (result instanceof String) {
-                    replacement = (String) result;
-                } else {
-                    replacement = OBJECT_MAPPER.writeValueAsString(result);
-                }
+                replacement = result instanceof String ? (String) result : OBJECT_MAPPER.writeValueAsString(result);
             } catch (Exception e) {
                 throw new InvalidImportException("Failed to serialize script result: " + e.getMessage(), e);
             }
-            logger.debug("Replaced script expression '{}' with '{}'", expression, replacement);
             matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(sb);
         return sb.toString();
     }
 
-    private Pair<String, List<RealmImport>> readRealmImportFromImportResource(ImportResource resource) {
+    private Pair<String, List<Map<String, Object>>> readRawImportFromImportResource(ImportResource resource) {
         String location = resource.getFilename();
         String content = resource.getValue();
-        String contentChecksum = DigestUtils.sha256Hex(content + getImportBehaviorChecksumSalt());
 
         if (logger.isTraceEnabled()) {
             logger.trace(content);
         }
 
-        List<RealmImport> realmImports;
         try {
-            realmImports = readContent(content);
+            return new ImmutablePair<>(location, readRawContent(content));
         } catch (Exception e) {
             throw new InvalidImportException("Unable to parse file '" + location + "': " + e.getMessage(), e);
         }
-        realmImports.forEach(realmImport -> {
-            realmImport.setChecksum(contentChecksum);
-            realmImport.setSource(location);
-        });
-
-        return new ImmutablePair<>(location, realmImports);
     }
 
-    private String getImportBehaviorChecksumSalt() {
-        if (environment == null
-                || !environment.containsProperty("import.behaviors.user-update-ignored-properties")
-        ) {
-            return "";
-        }
-
-        if (importConfigProperties == null || importConfigProperties.getBehaviors() == null) {
-            return "";
-        }
-
-        Collection<String> ignored = importConfigProperties.getBehaviors().getUserUpdateIgnoredProperties();
-        String ignoredNormalized = normalizeAndSortChecksumValues(ignored);
-
-        return "\n#userUpdateIgnoredProperties=" + ignoredNormalized;
-    }
-
-    private String normalizeAndSortChecksumValues(Collection<String> values) {
-        if (values == null || values.isEmpty()) {
-            return "";
-        }
-        return values.stream()
-                .filter(Objects::nonNull)
-                .map(String::trim)
-                .filter(v -> !v.isEmpty())
-                .sorted()
-                .collect(Collectors.joining(","));
-    }
-
-    private List<RealmImport> readContent(String content) {
-        List<RealmImport> realmImports = new ArrayList<>();
-
+    private List<Map<String, Object>> readRawContent(String content) {
+        List<Map<String, Object>> rawDocuments = new ArrayList<>();
         LoaderOptions loaderOptions = new LoaderOptions();
         loaderOptions.setCodePointLimit(importConfigProperties.getFiles().getCodePointLimit());
 
         Yaml yaml = new Yaml(loaderOptions);
         Iterable<Object> yamlDocuments = yaml.loadAll(content);
 
-        // FAST project custom extend about P2-Inc org plugin: Start
         for (Object yamlDocument : yamlDocuments) {
-            assertNoP2Data(yamlDocument, "$", false);
-            realmImports.add(OBJECT_MAPPER.convertValue(yamlDocument, RealmImport.class));
-        }
-        // FAST project custom extend: End
+            Object converted = OBJECT_MAPPER.convertValue(yamlDocument, Map.class);
+            if (!(converted instanceof Map<?, ?> rawDocument)) {
+                throw new InvalidImportException("Import document must be an object.");
+            }
 
-        return realmImports;
+            Map<String, Object> typedDocument = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : rawDocument.entrySet()) {
+                if (!(entry.getKey() instanceof String key)) {
+                    throw new InvalidImportException("Import document contains a non-string top-level key.");
+                }
+                typedDocument.put(key, entry.getValue());
+            }
+            rawDocuments.add(typedDocument);
+        }
+
+        return rawDocuments;
     }
 
     private String prepareResourceLocation(String location) {
-        String importLocation = location;
-
-        importLocation = importLocation.replaceFirst("^zip:", "jar:");
-
-        // backward compatibility to correct a possible missing prefix "file:" in path
+        String importLocation = location.replaceFirst("^zip:", "jar:");
         if (!importLocation.contains(":")) {
             importLocation = "file:" + importLocation;
         }
@@ -344,11 +315,14 @@ public class KeycloakImportProvider {
             return resource;
         }
 
-        if (userInfo == null) return resource;
+        if (userInfo == null) {
+            return resource;
+        }
 
         String[] userInfoSplit = userInfo.split(":");
-
-        if (userInfoSplit.length != 2) return resource;
+        if (userInfoSplit.length != 2) {
+            return resource;
+        }
 
         Authenticator.setDefault(new Authenticator() {
             @Override
@@ -357,60 +331,7 @@ public class KeycloakImportProvider {
             }
         });
 
-        // Mask AuthInfo
         String location = resource.getURI().toString().replace(userInfo + "@", "***@");
         return new UrlResource(location);
     }
-
-    // FAST project custom extend about P2-Inc org plugin: Start
-    private void assertNoP2Data(Object value, String path, boolean nested) {
-        if (value == null) {
-            return;
-        }
-
-        if (value instanceof Map<?, ?> map) {
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                Object key = entry.getKey();
-                if (key instanceof String keyString) {
-                    String currentPath = "$".equals(path) ? path + "." + keyString : path + "." + keyString;
-                    if ("P2".equals(keyString)) {
-                        String fileHint = nested
-                                ? "Place P2 data in a dedicated plugin-only file instead of nesting it inside "
-                                + "standard keycloak-config-cli documents."
-                                : "Place P2 data in a dedicated plugin-only file that is not read by the "
-                                + "standard keycloak-config-cli import locations.";
-                        throw new InvalidImportException(
-                                String.format(
-                                        "P2 data is not supported in standard keycloak-config-cli imports. Found '%s' at '%s'. %s",
-                                        keyString,
-                                        currentPath,
-                                        fileHint
-                                )
-                        );
-                    }
-                    assertNoP2Data(entry.getValue(), currentPath, true);
-                } else {
-                    assertNoP2Data(entry.getValue(), path, true);
-                }
-            }
-            return;
-        }
-
-        if (value instanceof Iterable<?> iterable) {
-            int index = 0;
-            for (Object element : iterable) {
-                assertNoP2Data(element, path + "[" + index + "]", true);
-                index++;
-            }
-            return;
-        }
-
-        if (value.getClass().isArray()) {
-            int length = java.lang.reflect.Array.getLength(value);
-            for (int index = 0; index < length; index++) {
-                assertNoP2Data(java.lang.reflect.Array.get(value, index), path + "[" + index + "]", true);
-            }
-        }
-    }
-    // FAST project custom extend: End
 }

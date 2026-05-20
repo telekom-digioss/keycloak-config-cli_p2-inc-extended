@@ -1,0 +1,8 @@
+{
+  "realm": "p2-invalid",
+  "P2": {
+    "config": {
+      "createAdminUser": true
+    }
+  }
+}

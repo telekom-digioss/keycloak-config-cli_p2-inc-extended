@@ -22,12 +22,19 @@ package de.adorsys.keycloak.config;
 
 import de.adorsys.keycloak.config.model.KeycloakImport;
 import de.adorsys.keycloak.config.model.RealmImport;
+// FAST project custom extend about P2-Inc org plugin: Start
+import de.adorsys.keycloak.config.phasetwo.properties.P2ImportConfigProperties;
+import de.adorsys.keycloak.config.phasetwo.service.P2ImportService;
+// FAST project custom extend: End
 import de.adorsys.keycloak.config.properties.ImportConfigProperties;
 import de.adorsys.keycloak.config.properties.KeycloakConfigProperties;
 import de.adorsys.keycloak.config.provider.KeycloakImportProvider;
 import de.adorsys.keycloak.config.service.RealmImportService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+// FAST project custom extend about P2-Inc org plugin: Start
+import org.springframework.beans.factory.ObjectProvider;
+// FAST project custom extend: End
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.ExitCodeGenerator;
@@ -48,7 +55,12 @@ import java.util.Map;
  * for backwards compatibility
  */
 @ConditionalOnProperty(prefix = "run", name = "operation", havingValue = "IMPORT", matchIfMissing = true)
-@EnableConfigurationProperties({ImportConfigProperties.class, KeycloakConfigProperties.class})
+// FAST project custom extend about P2-Inc org plugin: Start
+@EnableConfigurationProperties({
+        ImportConfigProperties.class,
+        KeycloakConfigProperties.class,
+        P2ImportConfigProperties.class
+})
 public class KeycloakConfigRunner implements CommandLineRunner, ExitCodeGenerator {
     private static final Logger logger = LoggerFactory.getLogger(KeycloakConfigRunner.class);
     private static final long START_TIME = System.currentTimeMillis();
@@ -56,6 +68,8 @@ public class KeycloakConfigRunner implements CommandLineRunner, ExitCodeGenerato
     private final KeycloakImportProvider keycloakImportProvider;
     private final RealmImportService realmImportService;
     private final ImportConfigProperties importConfigProperties;
+    private final P2ImportConfigProperties p2ImportConfigProperties;
+    private final ObjectProvider<P2ImportService> p2ImportServiceProvider;
 
     private int exitCode = 0;
 
@@ -63,10 +77,14 @@ public class KeycloakConfigRunner implements CommandLineRunner, ExitCodeGenerato
     public KeycloakConfigRunner(
             KeycloakImportProvider keycloakImportProvider,
             RealmImportService realmImportService,
-            ImportConfigProperties importConfigProperties) {
+            ImportConfigProperties importConfigProperties,
+            P2ImportConfigProperties p2ImportConfigProperties,
+            ObjectProvider<P2ImportService> p2ImportServiceProvider) {
         this.keycloakImportProvider = keycloakImportProvider;
         this.realmImportService = realmImportService;
         this.importConfigProperties = importConfigProperties;
+        this.p2ImportConfigProperties = p2ImportConfigProperties;
+        this.p2ImportServiceProvider = p2ImportServiceProvider;
     }
 
     @Override
@@ -78,6 +96,17 @@ public class KeycloakConfigRunner implements CommandLineRunner, ExitCodeGenerato
     public void run(String... args) {
         try {
             Collection<String> importLocations = importConfigProperties.getFiles().getLocations();
+
+            if (p2ImportConfigProperties.isEnabled()) {
+                P2ImportService p2ImportService = p2ImportServiceProvider.getIfAvailable();
+                if (p2ImportService == null) {
+                    throw new IllegalStateException("P2 import is enabled but P2 services are not available in this runtime context.");
+                }
+                p2ImportService.run(importLocations);
+                return;
+            }
+            // FAST project custom extend: End
+
             KeycloakImport keycloakImport = keycloakImportProvider.readFromLocations(importLocations);
 
             Map<String, Map<String, List<RealmImport>>> realmImports = keycloakImport.getRealmImports();
